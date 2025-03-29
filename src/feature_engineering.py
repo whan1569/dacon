@@ -4,115 +4,51 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from typing import Tuple, List, Dict, Any
 import logging
+import os
+import lightgbm as lgb
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def preprocess_features(df: pd.DataFrame) -> pd.DataFrame:
+def load_data(data_type='train'):
     """
-    데이터 전처리를 수행하는 함수
+    데이터를 로드하는 함수
+    """
+    data = {}
+    base_path = os.path.join(os.getcwd(), data_type)
     
-    Args:
-        df (pd.DataFrame): 전처리할 데이터프레임
-        
-    Returns:
-        pd.DataFrame: 전처리된 데이터프레임
-    """
-    try:
-        # 결측치 처리
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        imputer = SimpleImputer(strategy='mean')
-        df[numeric_columns] = imputer.fit_transform(df[numeric_columns])
-        
-        # 스케일링
-        scaler = StandardScaler()
-        df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
-        
-        logger.info("데이터 전처리 완료")
-        return df
-        
-    except Exception as e:
-        logger.error(f"데이터 전처리 중 오류 발생: {str(e)}")
-        raise
-
-def create_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    특성 엔지니어링을 수행하는 함수
+    # 각 폴더별로 데이터 로드
+    folders = ['1.회원정보', '2.신용정보', '3.승인매출정보', '4.청구입금정보', 
+              '5.잔액정보', '6.채널정보', '7.마케팅정보', '8.성과정보']
     
-    Args:
-        df (pd.DataFrame): 원본 데이터프레임
-        
-    Returns:
-        pd.DataFrame: 특성이 추가된 데이터프레임
-    """
-    try:
-        # 결측치 처리
-        numeric_columns = df.select_dtypes(include=[np.number]).columns
-        imputer = SimpleImputer(strategy='mean')
-        df[numeric_columns] = imputer.fit_transform(df[numeric_columns])
-        
-        # 스케일링
-        scaler = StandardScaler()
-        df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
-        
-        # 특성 생성
-        df['feature1'] = df['feature1'] * df['feature2']
-        df['feature2'] = df['feature2'] ** 2
-        
-        logger.info("특성 엔지니어링 완료")
-        return df
-        
-    except Exception as e:
-        logger.error(f"특성 엔지니어링 중 오류 발생: {str(e)}")
-        raise
-
-def select_features(df: pd.DataFrame, target_column: str) -> List[str]:
-    """
-    특성 선택을 수행하는 함수
+    for folder in folders:
+        folder_path = os.path.join(base_path, folder)
+        if os.path.exists(folder_path):
+            # 폴더 내의 모든 parquet 파일 로드
+            dfs = []
+            for file in os.listdir(folder_path):
+                if file.endswith('.parquet'):
+                    file_path = os.path.join(folder_path, file)
+                    try:
+                        df = pd.read_parquet(file_path)
+                        logger.info(f"Loaded {file} with columns: {df.columns.tolist()}")
+                        dfs.append(df)
+                    except Exception as e:
+                        logger.error(f"Error loading {file}: {str(e)}")
+            
+            if dfs:
+                # 같은 폴더의 데이터프레임들을 하나로 합치고 중복 제거
+                combined_df = pd.concat(dfs, axis=0).reset_index(drop=True)
+                # ID를 기준으로 중복 제거
+                if 'ID' in combined_df.columns:
+                    combined_df = combined_df.drop_duplicates(subset=['ID'])
+                data[folder] = combined_df
+                logger.info(f"Successfully loaded {folder} with shape: {data[folder].shape}")
+            else:
+                logger.warning(f"No parquet files found in {folder}")
     
-    Args:
-        df (pd.DataFrame): 데이터프레임
-        target_column (str): 타겟 컬럼명
-        
-    Returns:
-        List[str]: 선택된 특성 리스트
-    """
-    try:
-        # 특성 선택 로직 구현
-        selected_features = [col for col in df.columns if col != target_column]
-        logger.info(f"선택된 특성: {selected_features}")
-        return selected_features
-        
-    except Exception as e:
-        logger.error(f"특성 선택 중 오류 발생: {str(e)}")
-        raise
-
-def prepare_data(df: pd.DataFrame, target_column: str) -> Tuple[pd.DataFrame, pd.Series]:
-    """
-    데이터 준비를 수행하는 함수
-    
-    Args:
-        df (pd.DataFrame): 데이터프레임
-        target_column (str): 타겟 컬럼명
-        
-    Returns:
-        Tuple[pd.DataFrame, pd.Series]: 특성 데이터프레임과 타겟 시리즈
-    """
-    try:
-        # 특성 선택
-        selected_features = select_features(df, target_column)
-        
-        # 특성과 타겟 분리
-        X = df[selected_features]
-        y = df[target_column]
-        
-        logger.info("데이터 준비 완료")
-        return X, y
-        
-    except Exception as e:
-        logger.error(f"데이터 준비 중 오류 발생: {str(e)}")
-        raise
+    return data
 
 def preprocess_data(data):
     """
@@ -326,9 +262,19 @@ def create_features(data):
         if 'ID' in features.columns:
             features = features.drop('ID', axis=1)
         
-        logger.info("특성 생성 완료")
+        logger.info(f"생성된 특성 수: {len(features.columns)}")
+        logger.info(f"특성 목록: {features.columns.tolist()}")
+        
         return features
         
     except Exception as e:
         logger.error(f"특성 생성 중 오류 발생: {str(e)}")
-        raise 
+        raise
+
+def train_model(X, y, params):
+    """
+    모델을 학습하는 함수
+    """
+    model = lgb.LGBMClassifier(**params)
+    model.fit(X, y)
+    return model 
